@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>MARY06 — PEDIR SOCORRO</title>
+
+<!-- Supabase JS (CDN) -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+
+<!-- Leaflet for optional debug map (no API key) -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<style>
+  :root{
+    --bg:#09060a;
+    --panel:#0f0b0e;
+    --accent:#ff3b3b; /* vermelho */
+    --muted:#bdb6b8;
+    --glass: rgba(255,255,255,0.03);
+  }
+  html,body{height:100%;margin:0;font-family:Inter,system-ui,Arial;background:
+    radial-gradient(1200px 600px at 10% 20%, rgba(255,59,59,0.06), transparent 8%),
+    radial-gradient(900px 500px at 90% 80%, rgba(255,59,59,0.03), transparent 12%),
+    var(--bg); color:#fff;}
+  .wrap{max-width:900px;margin:32px auto;padding:28px;border-radius:18px;background:linear-gradient(180deg, rgba(255,255,255,0.02), transparent);box-shadow: 0 8px 40px rgba(0,0,0,0.6);display:grid;grid-template-columns:1fr 380px;gap:20px;}
+  .brand{display:flex;align-items:center;gap:12px}
+  .logo{width:56px;height:56px;border-radius:12px;background:linear-gradient(135deg,var(--accent),#ff8a8a);display:flex;align-items:center;justify-content:center;font-weight:800;color:#200;}
+  h1{margin:0;font-size:22px;letter-spacing:0.6px}
+  p.lead{color:var(--muted);margin-top:6px;font-size:13px}
+  .panel{background:var(--panel);padding:18px;border-radius:12px;box-shadow: inset 0 1px 0 rgba(255,255,255,0.02);}
+  .panic-btn{width:100%;padding:20px;border-radius:12px;border:0;font-size:20px;font-weight:700;background:linear-gradient(180deg,var(--accent),#cc2828);color:#fff;box-shadow:0 10px 30px rgba(255,59,59,0.12);cursor:pointer;letter-spacing:1px;}
+  .panic-btn:active{transform:translateY(2px)}
+  .small{font-size:13px;color:var(--muted);margin-top:8px}
+  .status{margin-top:12px;padding:10px;border-radius:10px;background:var(--glass);font-size:13px}
+  .controls{display:flex;gap:10px;margin-top:12px}
+  .btn-ghost{padding:8px 12px;border-radius:10px;border:1px solid rgba(255,255,255,0.06);background:transparent;color:var(--muted);cursor:pointer}
+  /* right column */
+  #map{height:420px;border-radius:10px;overflow:hidden}
+  footer{grid-column:1/-1;text-align:center;color:var(--muted);font-size:12px;margin-top:16px}
+  @media(max-width:920px){.wrap{grid-template-columns:1fr; padding:14px}.brand h1{font-size:18px}}
+</style>
+</head>
+<body>
+  <main class="wrap">
+    <div>
+      <div class="brand">
+        <div class="logo">M6</div>
+        <div>
+          <h1>MARY06</h1>
+          <p class="lead">Botão de emergência — envio de localização em tempo real.</p>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:18px">
+        <p style="margin:0 0 12px 0;font-weight:600">Pronto para enviar sua localização</p>
+
+        <button id="panic" class="panic-btn">PEDIR SOCORRO</button>
+
+        <div class="controls">
+          <button id="toggleWatch" class="btn-ghost">Iniciar envio contínuo</button>
+          <button id="oneShot" class="btn-ghost">Enviar única vez</button>
+        </div>
+
+        <div id="status" class="status">Status: inativo</div>
+        <div id="last" class="small">Última posição: —</div>
+
+        <div style="margin-top:12px;font-size:13px;color:var(--muted)">
+          <strong>Obs.</strong> O envio em tempo real funciona enquanto a página estiver aberta e com permissão de localização. Recomendado usar em navegador atualizado.
+        </div>
+      </div>
+    </div>
+
+    <aside>
+      <div class="panel">
+        <h3 style="margin-top:0">Mapa (debug)</h3>
+        <div id="map"></div>
+        <div style="margin-top:8px;color:var(--muted);font-size:13px">Coordenadas apareciam aqui em tempo real.</div>
+      </div>
+    </aside>
+
+    <footer>MARY06 • Se precisar eu te ajudo a ajustar tempo de envio ou integrar Push.</footer>
+  </main>
+
+<script>
+/*
+  CONFIGURE AQUI:
+  - Substitua SUPABASE_URL e SUPABASE_ANON_KEY com os valores do seu projeto Supabase.
+  - A tabela 'alerts' deve existir (conforme SQL que criamos antes).
+*/
+const SUPABASE_URL = "https://REPLACE_WITH_YOUR_SUPABASE_URL";
+const SUPABASE_ANON_KEY = "REPLACE_WITH_YOUR_SUPABASE_ANON_KEY";
+
+const supabase = supabaseJs.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+let watchId = null;
+let sending = false;
+let currentAlertId = null;
+
+// DOM
+const panicBtn = document.getElementById('panic');
+const toggleWatchBtn = document.getElementById('toggleWatch');
+const oneShotBtn = document.getElementById('oneShot');
+const statusEl = document.getElementById('status');
+const lastEl = document.getElementById('last');
+
+// Map
+const map = L.map('map', {zoomControl:false}).setView([0,0],2);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:''}).addTo(map);
+let marker = null;
+
+function setStatus(text){
+  statusEl.textContent = 'Status: ' + text;
+}
+
+function updateLast(lat,lon,accuracy){
+  lastEl.textContent = `Última posição: ${lat.toFixed(6)}, ${lon.toFixed(6)} (±${Math.round(accuracy)} m)`;
+}
+
+// send location to supabase alerts table
+async function sendLocation(position, extra={}){
+  const lat = position.coords.latitude;
+  const lon = position.coords.longitude;
+  const acc = position.coords.accuracy ?? null;
+
+  // Insert into alerts
+  const payload = {
+    victim_id: null, // optional: se usar tabela victims pode passar o id
+    latitude: lat,
+    longitude: lon,
+    accuracy: acc,
+    danger_level: extra.danger || 'alto'
+  };
+
+  try {
+    const { data, error } = await supabase.from('alerts').insert(payload).select();
+    if(error){
+      console.error('Erro inserindo alert:', error);
+      setStatus('erro ao enviar');
+      return;
+    }
+    // se precisar guardar id
+    if(data && data[0]) currentAlertId = data[0].id;
+    setStatus('enviado');
+    updateLast(lat,lon,acc);
+    // update map
+    if(marker) marker.setLatLng([lat,lon]); else marker = L.marker([lat,lon]).addTo(map);
+    map.setView([lat,lon],15);
+  } catch(e){
+    console.error(e);
+    setStatus('erro de rede');
+  }
+}
+
+// single-shot send
+oneShotBtn.onclick = ()=>{
+  if(!navigator.geolocation){ alert('Navegador não suporta geolocalização'); return; }
+  setStatus('obtendo localização...');
+  navigator.geolocation.getCurrentPosition(pos => {
+    sendLocation(pos);
+  }, err => {
+    setStatus('permissão negada');
+  }, {enableHighAccuracy:true, maximumAge:3000});
+};
+
+// continuous watch
+toggleWatchBtn.onclick = ()=>{
+  if(watchId){
+    navigator.geolocation.clearWatch(watchId);
+    watchId = null;
+    toggleWatchBtn.textContent = 'Iniciar envio contínuo';
+    setStatus('envio contínuo parado');
+    sending = false;
+    return;
+  }
+  if(!navigator.geolocation){ alert('Navegador não suporta geolocalização'); return; }
+  setStatus('aguardando posição...');
+  watchId = navigator.geolocation.watchPosition(pos => {
+    // envia a cada atualização; para reduzir custo, você pode filtrar por distância/tempo
+    sendLocation(pos);
+    sending = true;
+    toggleWatchBtn.textContent = 'Parar envio contínuo';
+  }, err => {
+    setStatus('erro localização');
+    console.error(err);
+  }, {enableHighAccuracy:true, maximumAge:2000, timeout:10000});
+};
+
+// Panic button: envia e inicia envio contínuo automaticamente
+panicBtn.onclick = ()=>{
+  if(!navigator.geolocation){ alert('Navegador não suporta geolocalização'); return; }
+  setStatus('enviando emergência...');
+  navigator.geolocation.getCurrentPosition(pos=>{
+    sendLocation(pos, {danger:'alto'});
+    // inicia watch automático
+    if(!watchId){
+      watchId = navigator.geolocation.watchPosition(p=>{
+        sendLocation(p,{danger:'alto'});
+        toggleWatchBtn.textContent = 'Parar envio contínuo';
+      }, err => { console.error(err); }, {enableHighAccuracy:true, maximumAge:2000});
+    }
+  }, err=>{
+    setStatus('permissão negada');
+  }, {enableHighAccuracy:true, maximumAge:3000});
+};
+
+</script>
+</body>
+</html>
